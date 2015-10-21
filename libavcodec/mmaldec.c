@@ -338,11 +338,6 @@ static av_cold int ffmmal_init_decoder(AVCodecContext *avctx)
         return AVERROR(ENOSYS);
     }
 
-    if ((ret = ff_get_format(avctx, avctx->codec->pix_fmts)) < 0)
-        return ret;
-
-    avctx->pix_fmt = ret;
-
     if ((status = mmal_component_create(MMAL_COMPONENT_DEFAULT_VIDEO_DECODER, &ctx->decoder)))
         goto fail;
 
@@ -677,6 +672,11 @@ static int ffmmal_read_frame(AVCodecContext *avctx, AVFrame *frame, int *got_fra
             MMAL_BUFFER_HEADER_T *stale_buffer;
 
             av_log(avctx, AV_LOG_INFO, "Changing output format.\n");
+
+            if ((ret = ff_get_format(avctx, avctx->codec->pix_fmts)) < 0)
+                return ret;
+
+            avctx->pix_fmt = ret;
 
             if ((status = mmal_port_disable(decoder->output[0])))
                 goto done;
