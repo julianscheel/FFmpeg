@@ -86,6 +86,10 @@ typedef struct MMALDecodeContext {
     int eos_received;
     int eos_sent;
     int extradata_sent;
+
+    // Interlaced status, valid from the next received frame
+    int top_field_first;
+    int interlaced;
 } MMALDecodeContext;
 
 // Assume decoder is guaranteed to produce output after at least this many
@@ -264,6 +268,7 @@ static enum AVColorSpace ffmmal_csp_to_av_csp(MMAL_FOURCC_T fourcc)
 
 static int ffmal_update_format(AVCodecContext *avctx)
 {
+    MMAL_PARAMETER_VIDEO_INTERLACE_TYPE_T interlace_type;
     MMALDecodeContext *ctx = avctx->priv_data;
     MMAL_STATUS_T status;
     int ret = 0;
@@ -315,6 +320,19 @@ static int ffmal_update_format(AVCodecContext *avctx)
     if (!ctx->pool_out->pool) {
         ret = AVERROR(ENOMEM);
         goto fail;
+    }
+
+    // Query interlaced type
+    interlace_type.hdr.id = MMAL_PARAMETER_VIDEO_INTERLACE_TYPE;
+    interlace_type.hdr.size = sizeof(MMAL_PARAMETER_VIDEO_INTERLACE_TYPE_T);
+    if ((status = mmal_port_parameter_get(decoder->output[0], &interlace_type.hdr)) == MMAL_SUCCESS) {
+        ctx->interlaced = (interlace_type.eMode != MMAL_InterlaceProgressive);
+        ctx->top_field_first = !ctx->interlaced ? 1 :
+            (interlace_type.eMode == MMAL_InterlaceFieldsInterleavedUpperFirst);
+        av_log(avctx, AV_LOG_INFO, "Detected %s%s video (%d)\n",
+                ctx->interlaced ? "interlaced" : "progressive",
+                ctx->interlaced ? (ctx->top_field_first ? " tff" : " bff") : "",
+                interlace_type.eMode);
     }
 
     return 0;
@@ -616,6 +634,8 @@ static int ffmal_copy_frame(AVCodecContext *avctx,  AVFrame *frame,
 
     frame->pkt_pts = buffer->pts == MMAL_TIME_UNKNOWN ? AV_NOPTS_VALUE : buffer->pts;
     frame->pkt_dts = AV_NOPTS_VALUE;
+    frame->interlaced_frame = ctx->interlaced;
+    frame->top_field_first = ctx->top_field_first;
 
 done:
     return ret;
