@@ -2607,6 +2607,20 @@ AVCodec *avcodec_find_decoder_by_name(const char *name)
     return NULL;
 }
 
+AVCodec *avcodec_find_decoder_by_pattern(enum AVCodecID id, const char *pattern)
+{
+    AVCodec *p;
+    if (!pattern)
+        return NULL;
+    p = first_avcodec;
+    while (p) {
+        if (av_codec_is_decoder(p) && p->id == id && strstr(p->name, pattern))
+            return p;
+        p = p->next;
+    }
+    return NULL;
+}
+
 const char *avcodec_get_name(enum AVCodecID id)
 {
     const AVCodecDescriptor *cd;

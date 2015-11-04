@@ -559,15 +559,19 @@ static int opt_recording_timestamp(void *optctx, const char *opt, const char *ar
     return 0;
 }
 
-static AVCodec *find_codec_or_die(const char *name, enum AVMediaType type, int encoder)
+static AVCodec *find_codec(const char *name, enum AVMediaType type,
+        enum AVCodecID id, int encoder)
 {
     const AVCodecDescriptor *desc;
     const char *codec_string = encoder ? "encoder" : "decoder";
-    AVCodec *codec;
+    AVCodec *codec = NULL;
 
     codec = encoder ?
         avcodec_find_encoder_by_name(name) :
         avcodec_find_decoder_by_name(name);
+
+    if (!codec && !encoder)
+        codec = avcodec_find_decoder_by_pattern(id, name);
 
     if (!codec && (desc = avcodec_descriptor_get_by_name(name))) {
         codec = encoder ? avcodec_find_encoder(desc->id) :
@@ -577,6 +581,21 @@ static AVCodec *find_codec_or_die(const char *name, enum AVMediaType type, int e
                    codec_string, codec->name, desc->name);
     }
 
+    return codec;
+}
+
+static enum AVCodecID find_codec_id(const char *name, enum AVMediaType type,
+        int encoder)
+{
+    AVCodec *codec = find_codec(name, type, 0, encoder);
+    return codec ? codec->id : AV_CODEC_ID_NONE;
+}
+
+static AVCodec *find_codec_or_die(const char *name, enum AVMediaType type,
+        enum AVCodecID id, int encoder)
+{
+    AVCodec *codec = find_codec(name, type, id, encoder);
+    const char *codec_string = encoder ? "encoder" : "decoder";
     if (!codec) {
         av_log(NULL, AV_LOG_FATAL, "Unknown %s '%s'\n", codec_string, name);
         exit_program(1);
@@ -594,7 +613,8 @@ static AVCodec *choose_decoder(OptionsContext *o, AVFormatContext *s, AVStream *
 
     MATCH_PER_STREAM_OPT(codec_names, str, codec_name, s, st);
     if (codec_name) {
-        AVCodec *codec = find_codec_or_die(codec_name, st->codec->codec_type, 0);
+        AVCodec *codec = find_codec_or_die(codec_name, st->codec->codec_type,
+                st->codec->codec_id, 0);
         st->codec->codec_id = codec->id;
         return codec;
     } else
@@ -900,22 +920,22 @@ static int open_input_file(OptionsContext *o, const char *filename)
     MATCH_PER_TYPE_OPT(codec_names, str,     data_codec_name, ic, "d");
 
     ic->video_codec_id   = video_codec_name ?
-        find_codec_or_die(video_codec_name   , AVMEDIA_TYPE_VIDEO   , 0)->id : AV_CODEC_ID_NONE;
+        find_codec_id(video_codec_name   , AVMEDIA_TYPE_VIDEO   , 0) : AV_CODEC_ID_NONE;
     ic->audio_codec_id   = audio_codec_name ?
-        find_codec_or_die(audio_codec_name   , AVMEDIA_TYPE_AUDIO   , 0)->id : AV_CODEC_ID_NONE;
+        find_codec_id(audio_codec_name   , AVMEDIA_TYPE_AUDIO   , 0) : AV_CODEC_ID_NONE;
     ic->subtitle_codec_id= subtitle_codec_name ?
-        find_codec_or_die(subtitle_codec_name, AVMEDIA_TYPE_SUBTITLE, 0)->id : AV_CODEC_ID_NONE;
+        find_codec_id(subtitle_codec_name, AVMEDIA_TYPE_SUBTITLE, 0) : AV_CODEC_ID_NONE;
     ic->data_codec_id    = data_codec_name ?
-        find_codec_or_die(data_codec_name, AVMEDIA_TYPE_DATA, 0)->id : AV_CODEC_ID_NONE;
+        find_codec_id(data_codec_name, AVMEDIA_TYPE_DATA, 0) : AV_CODEC_ID_NONE;
 
-    if (video_codec_name)
-        av_format_set_video_codec   (ic, find_codec_or_die(video_codec_name   , AVMEDIA_TYPE_VIDEO   , 0));
-    if (audio_codec_name)
-        av_format_set_audio_codec   (ic, find_codec_or_die(audio_codec_name   , AVMEDIA_TYPE_AUDIO   , 0));
-    if (subtitle_codec_name)
-        av_format_set_subtitle_codec(ic, find_codec_or_die(subtitle_codec_name, AVMEDIA_TYPE_SUBTITLE, 0));
-    if (data_codec_name)
-        av_format_set_data_codec(ic, find_codec_or_die(data_codec_name, AVMEDIA_TYPE_DATA, 0));
+    if (video_codec_name && ic->video_codec_id != AV_CODEC_ID_NONE)
+        av_format_set_video_codec   (ic, find_codec_or_die(video_codec_name   , AVMEDIA_TYPE_VIDEO   , 0, 0));
+    if (audio_codec_name && ic->audio_codec_id != AV_CODEC_ID_NONE)
+        av_format_set_audio_codec   (ic, find_codec_or_die(audio_codec_name   , AVMEDIA_TYPE_AUDIO   , 0, 0));
+    if (subtitle_codec_name && ic->subtitle_codec_id != AV_CODEC_ID_NONE)
+        av_format_set_subtitle_codec(ic, find_codec_or_die(subtitle_codec_name, AVMEDIA_TYPE_SUBTITLE, 0, 0));
+    if (data_codec_name && ic->data_codec_id != AV_CODEC_ID_NONE)
+        av_format_set_data_codec(ic, find_codec_or_die(data_codec_name, AVMEDIA_TYPE_DATA, 0, 0));
 
     ic->flags |= AVFMT_FLAG_NONBLOCK;
     ic->interrupt_callback = int_cb;
@@ -1130,7 +1150,7 @@ static void choose_encoder(OptionsContext *o, AVFormatContext *s, OutputStream *
     } else if (!strcmp(codec_name, "copy"))
         ost->stream_copy = 1;
     else {
-        ost->enc = find_codec_or_die(codec_name, ost->st->codec->codec_type, 1);
+        ost->enc = find_codec_or_die(codec_name, ost->st->codec->codec_type, 0, 1);
         ost->st->codec->codec_id = ost->enc->id;
     }
 }

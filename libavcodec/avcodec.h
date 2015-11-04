@@ -4063,6 +4063,15 @@ AVCodec *avcodec_find_decoder(enum AVCodecID id);
 AVCodec *avcodec_find_decoder_by_name(const char *name);
 
 /**
+ * Find a registered decoder with the specified pattern.
+ *
+ * @param id AVCodecID of the requested decoder
+ * @param pattern part of the decoders name to be searched for
+ * @return A decoder if one was found, NULL otherwise.
+ */
+AVCodec *avcodec_find_decoder_by_pattern(enum AVCodecID id, const char *pattern);
+
+/**
  * The default callback for AVCodecContext.get_buffer2(). It is made public so
  * it can be called by custom get_buffer2() implementations for decoders without
  * AV_CODEC_CAP_DR1 set.
