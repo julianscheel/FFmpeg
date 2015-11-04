@@ -18,6 +18,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#define _GNU_SOURCE
+#include <stdio.h>
 #include <stdint.h>
 
 #include "ffmpeg.h"
@@ -119,6 +121,7 @@ static int override_ffserver  = 0;
 static int input_stream_potentially_available = 0;
 static int ignore_unknown_streams = 0;
 static int copy_unknown_streams = 0;
+static int copy_program_id = 0;
 
 static void uninit_options(OptionsContext *o)
 {
@@ -2296,6 +2299,13 @@ loop_end:
     }
     oc->max_delay = (int)(o->mux_max_delay * AV_TIME_BASE);
 
+    if (copy_program_id) {
+        char *serviceid;
+        asprintf(&serviceid, "%d", input_files[0]->ctx->programs[0]->id);
+        av_dict_set(&of->opts, "mpegts_service_id", serviceid, 0);
+        free(serviceid);
+    }
+
     /* copy metadata */
     for (i = 0; i < o->nb_metadata_map; i++) {
         char *p;
@@ -3039,6 +3049,9 @@ const OptionDef options[] = {
         "Ignore unknown stream types" },
     { "copy_unknown",   OPT_BOOL | OPT_EXPERT,                       {              &copy_unknown_streams },
         "Copy unknown stream types" },
+    { "copy_program_id", OPT_BOOL,                                   {              &copy_program_id },
+        "set metadata information of outfile from infile",
+        "outfile[,metadata]:infile[,metadata]" },
     { "c",              HAS_ARG | OPT_STRING | OPT_SPEC |
                         OPT_INPUT | OPT_OUTPUT,                      { .off       = OFFSET(codec_names) },
         "codec name", "codec" },
