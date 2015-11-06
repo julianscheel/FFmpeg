@@ -102,6 +102,7 @@ typedef struct UDPContext {
     int remaining_in_dg;
     char *localaddr;
     int timeout;
+    int join_multicast;
     struct sockaddr_storage local_addr_storage;
     char *sources;
     char *block;
@@ -120,6 +121,7 @@ static const AVOption options[] = {
     { "reuse",          "explicitly allow reusing UDP sockets",            OFFSET(reuse_socket),   AV_OPT_TYPE_INT,    { .i64 = -1 },    -1, 1,       D|E },
     { "reuse_socket",   "explicitly allow reusing UDP sockets",            OFFSET(reuse_socket),   AV_OPT_TYPE_INT,    { .i64 = -1 },    -1, 1,       .flags = D|E },
     { "broadcast", "explicitly allow or disallow broadcast destination",   OFFSET(is_broadcast),   AV_OPT_TYPE_INT,    { .i64 = 0  },     0, 1,       E },
+    { "join_multicast", "Join multicast group as output",                  OFFSET(join_multicast),   AV_OPT_TYPE_INT,  { .i64 = 0 },      0, 1,       E },
     { "ttl",            "Time to live (multicast only)",                   OFFSET(ttl),            AV_OPT_TYPE_INT,    { .i64 = 16 },     0, INT_MAX, E },
     { "connect",        "set if connect() should be called on socket",     OFFSET(is_connected),   AV_OPT_TYPE_INT,    { .i64 =  0 },     0, 1,       .flags = D|E },
     { "fifo_size",      "set the UDP receiving circular buffer size, expressed as a number of packets with size of 188 bytes", OFFSET(circular_buffer_size), AV_OPT_TYPE_INT, {.i64 = 7*4096}, 0, INT_MAX, D },
@@ -659,6 +661,13 @@ static int udp_open(URLContext *h, const char *uri, int flags)
             s->timeout = strtol(buf, NULL, 10);
         if (is_output && av_find_info_tag(buf, sizeof(buf), "broadcast", p))
             s->is_broadcast = strtol(buf, NULL, 10);
+        if (is_output && av_find_info_tag(buf, sizeof(buf), "join_multicast", p)) {
+            char *endptr = NULL;
+            s->join_multicast = strtol(buf, &endptr, 10);
+            /* assume if no digits were found it is a request to enable it */
+            if (buf == endptr)
+                s->join_multicast = 1;
+        }
     }
     /* handling needed to support options picking from both AVOption and URL */
     s->circular_buffer_size *= 188;
@@ -751,6 +760,8 @@ static int udp_open(URLContext *h, const char *uri, int flags)
         if (h->flags & AVIO_FLAG_WRITE) {
             /* output */
             if (udp_set_multicast_ttl(udp_fd, s->ttl, (struct sockaddr *)&s->dest_addr) < 0)
+                goto fail;
+            if (s->join_multicast && udp_join_multicast_group(udp_fd, (struct sockaddr *)&s->dest_addr,(struct sockaddr *)&s->local_addr_storage) < 0)
                 goto fail;
         }
         if (h->flags & AVIO_FLAG_READ) {
