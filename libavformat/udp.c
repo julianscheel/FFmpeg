@@ -81,6 +81,7 @@ typedef struct UDPContext {
     int pkt_size;
     int is_multicast;
     int is_broadcast;
+    int is_output;
     int local_port;
     int reuse_socket;
     int overrun_nonfatal;
@@ -538,6 +539,59 @@ end:
 }
 #endif
 
+#if HAVE_PTHREAD_CANCEL
+static int udp_write_raw(URLContext *h, const uint8_t *buf, int size);
+static void *circular_send_buffer_task( void *_URLContext)
+{
+    URLContext *h = _URLContext;
+    UDPContext *s = h->priv_data;
+    int old_cancelstate;
+
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old_cancelstate);
+    /*if (ff_socket_nonblock(s->udp_fd, 0) < 0) {
+        av_log(h, AV_LOG_ERROR, "Failed to set blocking mode");
+        s->circular_buffer_error = AVERROR(EIO);
+        goto end;
+    }*/
+    while(1) {
+        int send_packets = 0;
+        int fifo_packets = av_fifo_size(s->fifo) / 1316;
+        if (fifo_packets > 0) {
+            if (fifo_packets > 60)
+                send_packets = fifo_packets;
+            else if (fifo_packets > 40)
+                send_packets = 8;
+            else if (fifo_packets > 20)
+                send_packets = 4;
+            else if(fifo_packets > 4)
+                send_packets = 2;
+            else if(fifo_packets > 1)
+                send_packets = 1;
+
+            while (send_packets--) {
+                uint8_t buf[1316];
+                av_fifo_generic_read(s->fifo, buf, 1316, NULL);
+
+                /* Blocking operations are always cancellation points;
+                   see "General Information" / "Thread Cancelation Overview"
+                   in Single Unix. */
+                pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &old_cancelstate);
+                udp_write_raw(h, buf, 1316);
+                pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old_cancelstate);
+            }
+        }
+
+        pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &old_cancelstate);
+        av_usleep(1000);
+        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old_cancelstate);
+    }
+
+end:
+    return NULL;
+}
+#endif
+
+
 static int parse_source_list(char *buf, char **sources, int *num_sources,
                              int max_sources)
 {
@@ -576,7 +630,7 @@ static int udp_open(URLContext *h, const char *uri, int flags)
 
     h->is_streamed = 1;
 
-    is_output = !(flags & AVIO_FLAG_READ);
+    s->is_output = is_output = !(flags & AVIO_FLAG_READ);
     if (s->buffer_size < 0)
         s->buffer_size = is_output ? UDP_TX_BUF_SIZE : UDP_MAX_PKT_SIZE;
 
@@ -824,9 +878,10 @@ static int udp_open(URLContext *h, const char *uri, int flags)
     s->udp_fd = udp_fd;
 
 #if HAVE_PTHREAD_CANCEL
-    if (!is_output && s->circular_buffer_size) {
+    if (s->circular_buffer_size) {
         int ret;
 
+        av_log(h, AV_LOG_INFO, "Allocate fifo with size %d\n", s->circular_buffer_size);
         /* start the task going */
         s->fifo = av_fifo_alloc(s->circular_buffer_size);
         ret = pthread_mutex_init(&s->mutex, NULL);
@@ -839,10 +894,30 @@ static int udp_open(URLContext *h, const char *uri, int flags)
             av_log(h, AV_LOG_ERROR, "pthread_cond_init failed : %s\n", strerror(ret));
             goto cond_fail;
         }
-        ret = pthread_create(&s->circular_buffer_thread, NULL, circular_buffer_task, h);
-        if (ret != 0) {
-            av_log(h, AV_LOG_ERROR, "pthread_create failed : %s\n", strerror(ret));
-            goto thread_fail;
+
+        if (!is_output) {
+            ret = pthread_create(&s->circular_buffer_thread, NULL, circular_buffer_task, h);
+            if (ret != 0) {
+                av_log(h, AV_LOG_ERROR, "pthread_create failed : %s\n", strerror(ret));
+                goto thread_fail;
+            }
+#if 0
+            struct sched_param sched_param;
+            sched_param.sched_priority = 99;
+            ret = pthread_setschedparam(s->circular_buffer_thread, SCHED_RR, &sched_param);
+            if (ret != 0) {
+                av_log(h, AV_LOG_ERROR, "pthread_setschedparam failed : %s\n", strerror(ret));
+            } else {
+                av_log(h, AV_LOG_ERROR, "pthread_setschedparam set successfully to %d\n",
+                                sched_param.sched_priority);
+            }
+#endif
+        } else {
+            ret = pthread_create(&s->circular_buffer_thread, NULL, circular_send_buffer_task, h);
+            if (ret != 0) {
+                av_log(h, AV_LOG_ERROR, "pthread_create failed : %s\n", strerror(ret));
+                goto thread_fail;
+            }
         }
         s->thread_started = 1;
     }
@@ -935,7 +1010,7 @@ static int udp_read(URLContext *h, uint8_t *buf, int size)
     return ret < 0 ? ff_neterrno() : ret;
 }
 
-static int udp_write(URLContext *h, const uint8_t *buf, int size)
+static int udp_write_raw(URLContext *h, const uint8_t *buf, int size)
 {
     UDPContext *s = h->priv_data;
     int ret;
@@ -956,6 +1031,25 @@ static int udp_write(URLContext *h, const uint8_t *buf, int size)
     return ret < 0 ? ff_neterrno() : ret;
 }
 
+static int udp_write(URLContext *h, const uint8_t *buf, int size)
+{
+    UDPContext *s = h->priv_data;
+    int ret = 0;
+
+    if (s->fifo) {
+        if (size > av_fifo_space(s->fifo)) {
+            av_log(h, AV_LOG_WARNING, "Incoming UDP packet too big for fifo space %d/%d!\n", size,
+                    av_fifo_space(s->fifo));
+            return 0;
+        }
+        ret = av_fifo_generic_write(s->fifo, buf, size, NULL);
+    } else {
+        ret = udp_write_raw(h, buf, size);
+    }
+
+    return ret;
+}
+
 static int udp_close(URLContext *h)
 {
     UDPContext *s = h->priv_data;
@@ -967,6 +1061,7 @@ static int udp_close(URLContext *h)
     if (s->thread_started) {
         int ret;
         pthread_cancel(s->circular_buffer_thread);
+        printf("Wait for buffer thread to finalize\n");
         ret = pthread_join(s->circular_buffer_thread, NULL);
         if (ret != 0)
             av_log(h, AV_LOG_ERROR, "pthread_join(): %s\n", strerror(ret));
