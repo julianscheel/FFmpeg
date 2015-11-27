@@ -291,6 +291,9 @@ static int ffmal_update_format(AVCodecContext *avctx)
     if ((status = mmal_port_parameter_set_boolean(decoder->output[0], MMAL_PARAMETER_VIDEO_INTERPOLATE_TIMESTAMPS, 0)))
         goto fail;
 
+    if ((status = mmal_port_parameter_set_boolean(decoder->output[0], MMAL_PARAMETER_ZERO_COPY, 0)))
+        av_log(avctx, AV_LOG_WARNING, "Could not enable zerocopy for decoder output port");
+
     if (avctx->pix_fmt == AV_PIX_FMT_MMAL) {
         format_out->encoding = MMAL_ENCODING_OPAQUE;
     } else {
@@ -315,8 +318,9 @@ static int ffmal_update_format(AVCodecContext *avctx)
         FFMAX(decoder->output[0]->buffer_size_min, decoder->output[0]->buffer_size_recommended);
     decoder->output[0]->buffer_num =
         FFMAX(decoder->output[0]->buffer_num_min, decoder->output[0]->buffer_num_recommended) + ctx->extra_buffers;
-    ctx->pool_out->pool = mmal_pool_create(decoder->output[0]->buffer_num,
-                                           decoder->output[0]->buffer_size);
+    ctx->pool_out->pool = mmal_port_pool_create(decoder->output[0],
+                                                decoder->output[0]->buffer_num,
+                                                decoder->output[0]->buffer_size);
     if (!ctx->pool_out->pool) {
         ret = AVERROR(ENOMEM);
         goto fail;
