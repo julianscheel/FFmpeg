@@ -2723,6 +2723,7 @@ static void report_new_stream(int input_index, AVPacket *pkt)
            input_index, pkt->stream_index,
            pkt->pos, av_ts2timestr(pkt->dts, &st->time_base));
     file->nb_streams_warn = pkt->stream_index + 1;
+    received_sigterm = 1;
 }
 
 static void set_encoder_id(OutputFile *of, OutputStream *ost)
